@@ -19,6 +19,7 @@
  * no longer carries it.
  */
 import { NativeTabs } from "expo-router/unstable-native-tabs";
+import { usePathname } from "expo-router";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import {
   useInboxUnreadCount,
@@ -37,17 +38,29 @@ function badgeValue(count: number): string | undefined {
   return count > 99 ? "99+" : String(count);
 }
 
+/** An open conversation — `/{slug}/chat/{id}` or `/{slug}/chat/new`. The list
+ *  itself is `/{slug}/chat`, which deliberately does not match. */
+const CONVERSATION_PATH = /\/chat\/[^/]+$/;
+
 export default function TabsLayout() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const inboxBadge = badgeValue(useInboxUnreadCount(wsId));
   const chatBadge = badgeValue(useChatUnreadMessageCount(wsId));
+
+  // An open conversation owns the bottom of the screen: its composer sits
+  // there, and the iOS 26 tab bar floats ABOVE content rather than reserving
+  // space below it, so leaving the bar up buries the input under glass. Hiding
+  // it is also the standard chat pattern — Messages, WeChat and Telegram all
+  // drop their bottom chrome once you are inside a thread. Back to the list
+  // brings it straight back.
+  const inConversation = CONVERSATION_PATH.test(usePathname());
 
   return (
     // onScrollDown: the bar collapses to a pill while reading a long list and
     // springs back the moment you scroll up — the iOS 26 behaviour users get
     // in Mail / Safari. Tint and material are left to the system so the glass
     // picks up the wallpaper and the light/dark transition for free.
-    <NativeTabs minimizeBehavior="onScrollDown">
+    <NativeTabs hidden={inConversation} minimizeBehavior="onScrollDown">
       <Trigger name="inbox">
         <Icon sf={{ default: "tray", selected: "tray.fill" }} />
         <Label>Inbox</Label>
