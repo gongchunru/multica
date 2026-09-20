@@ -35,7 +35,7 @@ import type {
   TaskQueuedPayload,
   TaskDispatchPayload,
 } from "@multica/core/types";
-import { chatKeys } from "@/data/queries/chat";
+import { chatKeys, isTaskMessageTimelineHeld } from "@/data/queries/chat";
 
 // =====================================================
 // Sessions list (ChatSession[] keyed by wsId)
@@ -303,22 +303,27 @@ export function seedAcceptedPendingTask(
 /**
  * Append a `task:message` payload into the per-task timeline cache.
  *
+ * - Keeps only frames for a task this client already holds a timeline entry
+ *   for. `task:message` is a workspace-wide fanout, so without this gate every
+ *   phone would accumulate the transcript of every run in the workspace — and
+ *   `setQueryData` would rebuild an entry that was already garbage-collected,
+ *   which `staleTime: Infinity` then reads as a complete timeline and never
+ *   refetches.
  * - De-dupes on `seq` (server may re-emit on flaky network).
  * - Sorts by `seq` ASC after insert so reordered late-arriving rows still
  *   render in execution order.
- * - Creates the cache entry on first event (empty default), so the timeline
- *   is visible even before the user opens the assistant bubble that drives
- *   the lazy fetch.
  *
- * Mirrors `packages/core/realtime/use-realtime-sync.ts` ~675-689 (web's
- * single global handler). Mobile attaches per-session via
- * `use-chat-session-realtime` instead — see the WS strategy note in
+ * Mirrors web's global handler in `packages/core/realtime/use-realtime-sync.ts`
+ * (the `isTaskMessageTimelineHeld` gate + `writeTaskMessageBatch`). Mobile
+ * attaches per-session via `use-chat-session-realtime` and writes each frame
+ * as it arrives rather than batching — see the WS strategy note in
  * `apps/mobile/CLAUDE.md` for why mobile prefers per-record mounts.
  */
 export function appendTaskMessage(
   qc: QueryClient,
   payload: TaskMessagePayload,
 ) {
+  if (!isTaskMessageTimelineHeld(qc, payload.task_id)) return;
   qc.setQueryData<TaskMessagePayload[]>(
     chatKeys.taskMessages(payload.task_id),
     (old = []) => {

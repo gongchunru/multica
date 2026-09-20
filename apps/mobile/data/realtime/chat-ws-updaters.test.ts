@@ -5,9 +5,11 @@ import type {
   ChatMessage,
   ChatPendingTask,
   ChatQuickActionsPayload,
+  TaskMessagePayload,
 } from "@multica/core/types";
 
 import {
+  appendTaskMessage,
   applyChatDoneToCache,
   applyChatQuickActionsToCache,
   promotePendingTaskToRunning,
@@ -385,5 +387,89 @@ describe("applyChatQuickActionsToCache", () => {
       { label: "Draft it", prompt: "Draft the complete plan", primary: true },
     ]);
     unsub();
+  });
+});
+
+describe("appendTaskMessage", () => {
+  const TASK = "task-1";
+
+  function frame(over: Partial<TaskMessagePayload> = {}): TaskMessagePayload {
+    return {
+      task_id: TASK,
+      issue_id: "",
+      seq: 1,
+      type: "text",
+      content: "reading the repo",
+      ...over,
+    };
+  }
+
+  it("keeps a frame that carries no chat_session_id (the server never sends one)", () => {
+    // Regression: the per-session handler used to drop every frame whose
+    // `chat_session_id` did not equal the open session. taskMessageToPayload
+    // on the server fills task_id + issue_id only, so that comparison was
+    // always `undefined !== sessionId` — the live trace never rendered and the
+    // status line stayed on "Starting up" for the whole turn.
+    const qc = new QueryClient();
+    qc.setQueryData<TaskMessagePayload[]>(chatKeys.taskMessages(TASK), []);
+
+    appendTaskMessage(qc, frame());
+
+    const rows = qc.getQueryData<TaskMessagePayload[]>(
+      chatKeys.taskMessages(TASK),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows?.[0].content).toBe("reading the repo");
+  });
+
+  it("keeps a frame that lands while the timeline's first fetch is still in flight", () => {
+    // The realistic path: the screen mounts the timeline query the moment the
+    // server hands back a real task id, and the agent's first frames arrive
+    // before that fetch resolves. Entry presence — not resolved data — is the
+    // gate, so those frames must survive.
+    const qc = new QueryClient();
+    const observer = new QueryObserver<TaskMessagePayload[]>(qc, {
+      queryKey: chatKeys.taskMessages(TASK),
+      queryFn: () => new Promise<TaskMessagePayload[]>(() => {}),
+      staleTime: Infinity,
+      gcTime: Infinity,
+      retry: false,
+    });
+    const unsub = observer.subscribe(() => {});
+
+    appendTaskMessage(qc, frame({ seq: 3, type: "thinking" }));
+
+    expect(
+      qc.getQueryData<TaskMessagePayload[]>(chatKeys.taskMessages(TASK)),
+    ).toHaveLength(1);
+    unsub();
+  });
+
+  it("drops frames for a task this client never opened", () => {
+    // task:message is a workspace-wide fanout. Without the gate every run in
+    // the workspace — tool input included — would accumulate on the phone.
+    const qc = new QueryClient();
+
+    appendTaskMessage(qc, frame({ task_id: "task-nobody-opened" }));
+
+    expect(
+      qc.getQueryCache().find({
+        queryKey: chatKeys.taskMessages("task-nobody-opened"),
+      }),
+    ).toBeUndefined();
+  });
+
+  it("de-dupes on seq and keeps the timeline in execution order", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<TaskMessagePayload[]>(chatKeys.taskMessages(TASK), []);
+
+    appendTaskMessage(qc, frame({ seq: 2, content: "second" }));
+    appendTaskMessage(qc, frame({ seq: 1, content: "first" }));
+    appendTaskMessage(qc, frame({ seq: 2, content: "re-emitted" }));
+
+    const rows = qc.getQueryData<TaskMessagePayload[]>(
+      chatKeys.taskMessages(TASK),
+    );
+    expect(rows?.map((r) => r.content)).toEqual(["first", "second"]);
   });
 });

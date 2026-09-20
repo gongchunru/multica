@@ -2,9 +2,11 @@
  * Per-session chat realtime — Layer 3.
  *
  * Mounted by the chat screen with the active session id; cleans up on
- * navigate-away. All handlers self-gate on `chat_session_id === sessionId`
- * so a backgrounded session (user switched sessions in the sheet but kept
- * the chat tab open) doesn't keep mutating caches it no longer owns.
+ * navigate-away. Every handler but `task:message` self-gates on
+ * `chat_session_id === sessionId` so a backgrounded session (user switched
+ * sessions in the sheet but kept the chat tab open) doesn't keep mutating
+ * caches it no longer owns. `task:message` carries no chat hint from the
+ * server and gates on held timeline caches instead — see its handler.
  *
  * Events handled:
  *   - chat:message              → invalidate messages + pendingTask
@@ -21,6 +23,8 @@
  *                                  message that must show up)
  *   - chat:session_deleted      → fire onSessionDeleted() so the screen
  *                                  can drop the active id and unwind UI
+ *   - task:message              → append to the live execution timeline for
+ *                                  a task this client already holds
  *   - reconnect                 → invalidate this session's messages +
  *                                  pendingTask
  */
@@ -103,13 +107,23 @@ export function useChatSessionRealtime(
           onSessionDeleted?.();
         }),
         // Live execution trace for any task firing under this chat session.
-        // Per-record gate: `chat_session_id` is optional on the payload
-        // (issue tasks also fire `task:message`), so non-chat traffic is
-        // filtered out here. The cache is keyed on `task_id` rather than
-        // `sessionId`, so completed tasks still render their trace under the
-        // assistant bubble after the live pill unmounts.
+        //
+        // Deliberately NOT gated on `chat_session_id`: the server never puts
+        // one on this event. `taskMessageToPayload` (server/internal/handler/
+        // daemon.go) fills task_id + issue_id only, unlike every other `task:*`
+        // event, which does carry the chat hint. The old per-session gate
+        // therefore compared `undefined` against the session id and dropped
+        // 100% of the frames — the trace never rendered and the status line
+        // sat on "Starting up" for the whole turn, because StatusPill reads
+        // `taskMessages.length > 0` to decide a task is running.
+        //
+        // The gate that does work is the one web uses: keep a frame only for a
+        // task whose timeline this client already holds. It lives inside
+        // `appendTaskMessage`, which is also what keeps the workspace-wide
+        // fanout out of this phone's cache. The cache is keyed on `task_id`
+        // rather than `sessionId`, so completed tasks still render their trace
+        // under the assistant bubble after the live pill unmounts.
         ws.on("task:message", (payload) => {
-          if (!isMine(payload)) return;
           appendTaskMessage(qc, payload);
         }),
         ws.onReconnect(invalidateMine),

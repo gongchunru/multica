@@ -15,7 +15,7 @@
  * are scoped to each owning hook (see use-chat-sessions-realtime.ts and
  * use-chat-session-realtime.ts).
  */
-import { queryOptions } from "@tanstack/react-query";
+import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import { api } from "@/data/api";
 
 export const chatKeys = {
@@ -46,6 +46,32 @@ export function isTaskMessageTaskId(
   taskId: string | null | undefined,
 ): taskId is string {
   return typeof taskId === "string" && UUID_PATTERN.test(taskId);
+}
+
+/**
+ * Whether this client already holds a timeline cache entry for `taskId`.
+ *
+ * `task:message` is a workspace-wide fanout: every client receives every run's
+ * frames, but only the runs a screen actually opened are ever rendered. Entry
+ * presence is the gate — mounting a `useQuery` registers it before the fetch
+ * resolves, so a frame landing mid-backfill is still kept, while frames for
+ * runs nobody opened are dropped instead of accumulating a transcript (tool
+ * input included) the user will never look at.
+ *
+ * Dropping a frame for an unregistered task is safe: the row is persisted
+ * before it is broadcast, so whoever opens the task next fetches it.
+ *
+ * Mirrors `isTaskMessageTimelineHeld` in packages/core/chat/queries.ts —
+ * mobile owns its own copy per the "mirror, don't import" rule.
+ */
+export function isTaskMessageTimelineHeld(
+  qc: QueryClient,
+  taskId: string,
+): boolean {
+  return (
+    qc.getQueryCache().find({ queryKey: chatKeys.taskMessages(taskId) }) !==
+    undefined
+  );
 }
 
 export const chatSessionsOptions = (wsId: string | null) =>
