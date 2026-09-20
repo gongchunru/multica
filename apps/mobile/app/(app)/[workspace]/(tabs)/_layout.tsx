@@ -19,8 +19,8 @@
  * no longer carries it.
  */
 import { NativeTabs } from "expo-router/unstable-native-tabs";
-import { usePathname } from "expo-router";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useChatImmersiveStore } from "@/data/stores/chat-immersive-store";
 import {
   useInboxUnreadCount,
   useChatUnreadMessageCount,
@@ -38,9 +38,6 @@ function badgeValue(count: number): string | undefined {
   return count > 99 ? "99+" : String(count);
 }
 
-/** An open conversation — `/{slug}/chat/{id}` or `/{slug}/chat/new`. The list
- *  itself is `/{slug}/chat`, which deliberately does not match. */
-const CONVERSATION_PATH = /\/chat\/[^/]+$/;
 
 export default function TabsLayout() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
@@ -53,7 +50,11 @@ export default function TabsLayout() {
   // it is also the standard chat pattern — Messages, WeChat and Telegram all
   // drop their bottom chrome once you are inside a thread. Back to the list
   // brings it straight back.
-  const inConversation = CONVERSATION_PATH.test(usePathname());
+  //
+  // The chat Stack sets this from its transition events rather than us reading
+  // the route: a route only changes once the navigation state commits, which
+  // for a pop is after the transition, and the bar visibly snapped in late.
+  const inConversation = useChatImmersiveStore((s) => s.inConversation);
 
   return (
     // onScrollDown: the bar collapses to a pill while reading a long list and

@@ -11,12 +11,31 @@
  * one, which is where its back button and swipe-to-dismiss come from.
  */
 import { Stack } from "expo-router";
+import { useChatImmersiveStore } from "@/data/stores/chat-immersive-store";
 
 export default function ChatStackLayout() {
+  const setInConversation = useChatImmersiveStore((s) => s.setInConversation);
+
   return (
     <Stack>
       <Stack.Screen name="index" options={{ headerShown: false }} />
-      <Stack.Screen name="[sessionId]" options={{ headerBackTitle: "Chats" }} />
+      <Stack.Screen
+        name="[sessionId]"
+        options={{ headerBackTitle: "Chats" }}
+        // Only THIS screen's transitions speak for the tab bar. Listening on
+        // the Stack instead caught the list screen's own transition, whose
+        // `closing` is undefined — read as "entering a conversation", so
+        // opening the Chat tab hid the bar with no pop coming to bring it
+        // back. `transitionStart` is the point of it: the bar then moves with
+        // the screen rather than trailing the committed route.
+        listeners={{
+          transitionStart: (e) => {
+            const closing = (e.data as { closing?: boolean } | undefined)
+              ?.closing;
+            setInConversation(closing !== true);
+          },
+        }}
+      />
     </Stack>
   );
 }

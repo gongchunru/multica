@@ -14,6 +14,7 @@
 import { useCallback, useState } from "react";
 import { Alert, FlatList, Pressable, View } from "react-native";
 import { router } from "expo-router";
+import { useFocusEffect } from "@react-navigation/native";
 import { useQuery } from "@tanstack/react-query";
 import type { Agent, ChatSession } from "@multica/core/types";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
@@ -29,10 +30,20 @@ import { memberListOptions } from "@/data/queries/members";
 import { useDeleteChatSession } from "@/data/mutations/chat";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useChatImmersiveStore } from "@/data/stores/chat-immersive-store";
 import { chatSessionDisplayTitle } from "@/lib/chat-session-title";
 import { cn } from "@/lib/utils";
 
 export default function ChatListScreen() {
+  // Backstop for the tab bar. The conversation's transition listener is what
+  // makes hiding and showing feel immediate, but a missed event there used to
+  // strand the bar off-screen with no way back. Standing on the list is proof
+  // no conversation is open, so assert it on every focus.
+  const setInConversation = useChatImmersiveStore((s) => s.setInConversation);
+  useFocusEffect(
+    useCallback(() => setInConversation(false), [setInConversation]),
+  );
+
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   // Targets are built as absolute `/{slug}/chat/...` paths, matching every
   // other screen here. A relative `./id` resolves against the route rather

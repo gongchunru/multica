@@ -40,9 +40,9 @@
  * `startRenderingFromBottom` (initial paint at bottom, no setTimeout
  * hacks). Cell recycling also keeps scroll-up smooth.
  */
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, View } from "react-native";
-import { FlashList } from "@shopify/flash-list";
+import { FlashList, type FlashListRef } from "@shopify/flash-list";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import type {
@@ -115,10 +115,27 @@ export function ChatMessageList({
   liveTaskMessages,
   availability,
 }: Props) {
-  // Top-level selection subscription gates the outer "tap-outside-to-dismiss"
-  // Pressable below. When null, the Pressable stays disabled and every tap
-  // passes through to the list cells / bubble long-press wrappers normally.
+  // Read by the outer "tap-outside-to-dismiss" Pressable below, which clears
+  // the selection caret before putting the keyboard away.
   const selectingId = useChatSelectStore((s) => s.selectingId);
+
+  // `startRenderingFromBottom` only places the FIRST paint. Markdown bubbles
+  // keep growing after it — Shiki highlights, tables reflow, images resolve
+  // their natural size — and each growth pushes the end further away. On a
+  // long transcript that drifts past `autoscrollToBottomThreshold`, the list
+  // stops following, and opening a chat leaves the reader a screen or more
+  // short of the newest message.
+  //
+  // So hold the bottom until the reader takes over: re-anchor on each growth,
+  // and stop for good once they scroll. Unlike the FlatList-era scroll dance
+  // this replaced, the correction is unanimated and self-limiting, so it
+  // cannot become the "open chat → feels stuck" loop again.
+  const listRef = useRef<FlashListRef<ChatMessage>>(null);
+  const readerTookOver = useRef(false);
+  const keepAtBottom = () => {
+    if (readerTookOver.current) return;
+    listRef.current?.scrollToEnd({ animated: false });
+  };
 
   // Every image in this session, in message order (MUL-5752), so tapping one
   // opens the lightbox at its position and a swipe walks the rest.
@@ -174,15 +191,16 @@ export function ChatMessageList({
     showLiveSection && (liveTaskMessages?.length ?? 0) > 0;
 
   return (
-    // Outer Pressable owns the "tap anywhere outside the selected bubble
-    // to exit text-selection mode" gesture. Disabled when no message is
-    // selected, so it's a layout-only wrapper and every tap passes straight
-    // through to the FlashList cells. Active state captures any tap that
-    // didn't fire an inner Pressable — bubble cells in selecting mode
-    // render their body without a Pressable wrapper (see `MessageRow`'s
-    // `if (isSelecting) return body;`), so taps on the selected bubble
-    // also dismiss, matching iOS Notes / iMessage behaviour. Scroll
-    // gestures are unaffected (Pressable only intercepts non-drag taps).
+    // Outer Pressable owns the "tap anywhere outside the selected bubble to
+    // exit text-selection mode" gesture. Disabled when no message is selected,
+    // so it is a layout-only wrapper and every tap passes straight through.
+    // Bubble cells in selecting mode render without their own Pressable (see
+    // `MessageRow`'s `if (isSelecting) return body;`), so a tap on the
+    // selected bubble dismisses too, matching iOS Notes / iMessage.
+    //
+    // Keyboard dismissal is NOT wired here: the list's ScrollView claims the
+    // touch responder before an ancestor sees it. That lives on the list's
+    // own `keyboardShouldPersistTaps` below.
     <ImageSequenceProvider blocks={imageBlocks}>
     <Pressable
       onPress={
@@ -199,6 +217,7 @@ export function ChatMessageList({
         scroll position). Cheap because sessions are switched, not
         re-rendered every keystroke. */}
     <FlashList
+      ref={listRef}
       key={messages[0]?.id ?? "empty"}
       data={messages}
       keyExtractor={(m) => m.id}
@@ -245,14 +264,28 @@ export function ChatMessageList({
       // matches iMessage's behavior where scrolling implicitly commits /
       // dismisses the selection caret. Hooks both drag-start and the
       // momentum kick after a flick so a fast scroll can't escape.
-      onScrollBeginDrag={() => useChatSelectStore.getState().clear()}
+      onScrollBeginDrag={() => {
+        readerTookOver.current = true;
+        useChatSelectStore.getState().clear();
+      }}
       onMomentumScrollBegin={() => useChatSelectStore.getState().clear()}
+      onContentSizeChange={keepAtBottom}
       // iMessage-style keyboard dismissal: dragging the list pulls the
-      // keyboard down with the finger (iOS); tapping empty space between
-      // bubbles dismisses it. `handled` keeps Pressables inside bubbles
-      // (long-press action sheet etc.) firing normally.
+      // keyboard down with the finger (iOS), and any tap on the transcript
+      // puts it away.
+      //
+      // `never`, not `handled`. Every bubble is wrapped in a Pressable for
+      // long-press, so under `handled` a tap on one counted as handled and
+      // the keyboard stayed up — there was almost nowhere left to tap that
+      // would dismiss it. An ancestor Pressable cannot rescue that either:
+      // the list's own ScrollView claims the touch responder first, so the
+      // tap never reaches it.
+      //
+      // The cost is that the first tap with the keyboard up only dismisses,
+      // so acting on a quick-action chip then takes a second tap. That is
+      // what Messages does too.
       keyboardDismissMode="interactive"
-      keyboardShouldPersistTaps="handled"
+      keyboardShouldPersistTaps="never"
     />
     </Pressable>
     </ImageSequenceProvider>

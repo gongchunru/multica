@@ -28,6 +28,9 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, View } from "react-native";
+import Animated, { useAnimatedStyle } from "react-native-reanimated";
+import { useReanimatedKeyboardAnimation } from "react-native-keyboard-controller";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Stack, router, useLocalSearchParams } from "expo-router";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -103,6 +106,21 @@ export default function ChatSessionScreen() {
     routeAgentId ?? null,
   );
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
+
+  // KeyboardStickyView slides the composer up over the keyboard but leaves its
+  // slot in the column, so the lifted composer covered the newest messages.
+  // Shrink the transcript by the same amount it rises — `height` is negative
+  // while the keyboard is up, and the composer's sticky offset already spends
+  // `insets.bottom`, so that comes off here too.
+  const insets = useSafeAreaInsets();
+  const { height: keyboardHeight } = useReanimatedKeyboardAnimation();
+  // Plain style rather than `className="flex-1"`: NativeWind and Reanimated
+  // both write `style`, and on Animated.View the animated one is the only
+  // reliable channel.
+  const transcriptInset = useAnimatedStyle(() => ({
+    flex: 1,
+    paddingBottom: Math.max(0, -keyboardHeight.value - insets.bottom),
+  }));
 
   // ── Server state ───────────────────────────────────────────────────────
   const { data: sessions = [] } = useQuery(chatSessionsOptions(wsId));
@@ -473,20 +491,22 @@ export default function ChatSessionScreen() {
           bottom safe-area inset, the same as the comment composer. Wrapping
           it here too would double-stack the lift. */}
       <View className="flex-1">
-        <ChatMessageList
-          messages={visibleMessages}
-          loading={messagesLoading}
-          hasSessions={sessions.length > 0}
-          agent={currentAgent}
-          onPickPrompt={(text) => setDraft(draftKey, text)}
-          onQuickAction={(action) =>
-            handleSend(action.prompt, [], { clearDraft: false })
-          }
-          quickActionsDisabled={sending || disabled}
-          pendingTask={pendingTask}
-          liveTaskMessages={liveTaskMessages}
-          availability={presenceAvailability}
-        />
+        <Animated.View style={transcriptInset}>
+          <ChatMessageList
+            messages={visibleMessages}
+            loading={messagesLoading}
+            hasSessions={sessions.length > 0}
+            agent={currentAgent}
+            onPickPrompt={(text) => setDraft(draftKey, text)}
+            onQuickAction={(action) =>
+              handleSend(action.prompt, [], { clearDraft: false })
+            }
+            quickActionsDisabled={sending || disabled}
+            pendingTask={pendingTask}
+            liveTaskMessages={liveTaskMessages}
+            availability={presenceAvailability}
+          />
+        </Animated.View>
         {runtimeBound ? (
           <OfflineBanner
             agentName={currentAgent?.name}
