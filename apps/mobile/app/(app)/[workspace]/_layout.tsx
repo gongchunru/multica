@@ -16,7 +16,6 @@ import { useWorkspacePresencePrefetch } from "@/lib/use-workspace-presence-prefe
 import { ModalCloseButton } from "@/components/ui/modal-close-button";
 import { useNewIssueDraftResetOnWorkspaceChange } from "@/data/stores/new-issue-draft-store";
 import { useNewProjectDraftResetOnWorkspaceChange } from "@/data/stores/new-project-draft-store";
-import { useChatSessionPickerResetOnWorkspaceChange } from "@/data/stores/chat-session-picker-store";
 
 /**
  * Shared Stack.Screen options for every iOS formSheet-presented sheet route.
@@ -117,7 +116,6 @@ export default function WorkspaceLayout() {
   // session id, etc.) is invalid in workspace B and must not leak.
   useNewIssueDraftResetOnWorkspaceChange(matched?.id ?? null);
   useNewProjectDraftResetOnWorkspaceChange(matched?.id ?? null);
-  useChatSessionPickerResetOnWorkspaceChange(matched?.id ?? null);
 
   // Wait for the workspaces list before deciding membership — otherwise a
   // valid deep link would briefly redirect away on cold start.
@@ -286,17 +284,12 @@ export default function WorkspaceLayout() {
             chooses the right view-store via `?scope=my|all` URL param. */}
         <Stack.Screen name="issues-filter" options={SHEET_OPTIONS} />
         {/* Chat session-switch sheet. */}
-        <Stack.Screen name="chat-sessions" options={SHEET_OPTIONS} />
         {/* Workspace switcher — reached from the More popover's collapsed
             WorkspaceCard. Two-step (pick → iOS Alert confirm → switch). */}
         <Stack.Screen name="switch-workspace" options={SHEET_OPTIONS} />
         <Stack.Screen
           name="more/issues"
           options={{ title: "Issues", headerBackTitle: "Back" }}
-        />
-        <Stack.Screen
-          name="more/projects"
-          options={{ title: "Projects", headerBackTitle: "Back" }}
         />
         <Stack.Screen
           name="more/agents"

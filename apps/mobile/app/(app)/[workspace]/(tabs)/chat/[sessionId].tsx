@@ -1,33 +1,29 @@
 /**
- * Chat tab — single-screen IA.
+ * One conversation — the detail half of the Chat tab's list/detail pair.
+ *
+ * Which session is open is now the URL, not component state: `[sessionId]`
+ * is the route param, and the literal `new` opens the blank compose state.
+ * That swap is what buys the tab its memory — the chat Stack keeps this
+ * screen mounted when you leave for another tab, so coming back lands on the
+ * same conversation instead of resetting to the list. It also makes the back
+ * button real (chat/index) and the screen deep-linkable.
+ *
+ * A brand-new chat has no id until the first send creates one. Rather than
+ * push a second screen at that moment, `router.setParams` rewrites `new` to
+ * the real id in place: the transcript never unmounts mid-send, and Back
+ * still returns to the list rather than to a stale blank compose screen.
  *
  * Layout:
- *   View ─ Header(center: ChatTitleButton, right: ChatSessionActions)
- *        ─ (NoAgentBanner?)
- *        ─ KeyboardAvoidingView ─ ChatMessageList (includes live status
- *                                                  + timeline in its
- *                                                  ListFooterComponent)
+ *   Stack header (native — back button + swipe-to-dismiss come from it)
+ *   View ─ (NoAgentBanner?)
+ *        ─ KeyboardAvoidingView ─ ChatMessageList (live status + timeline
+ *                                                  in its ListFooter)
  *                                ─ OfflineBanner
  *                                ─ ChatComposer
  *
- * Session switching, agent selection, and session deletion all happen
- * inside this screen via Modal sheets — there is no `/chat/[id]` sub-route.
- *
- * State (all local, none in Zustand):
- *   - activeSessionId   — which session is being viewed (null = new chat blank)
- *   - selectedAgentId   — overrides currentSession.agent_id when set (used
- *                         when starting a new chat with a freshly-picked agent)
- *   - sessionSheetOpen  — bottom modal visibility
- *   - agentPickerOpen   — bottom modal visibility
- *
- * Side effects:
- *   - useChatSessionRealtime(activeSessionId) for per-record WS events
- *   - auto markRead when entering a session with has_unread
- *   - ensureSession dedupe ref for concurrent first-message sends
- *
  * Optimistic send burst mirrors web's chat-window.tsx send sequence
  * (packages/views/chat/components/chat-window.tsx ~262-345):
- *   seed messages → seed pendingTask → flip activeSessionId → POST →
+ *   seed messages → seed pendingTask → adopt the new id → POST →
  *   patch pendingTask with server task_id + created_at.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -37,7 +33,7 @@ import {
   Platform,
   View,
 } from "react-native";
-import { router } from "expo-router";
+import { Stack, router, useLocalSearchParams } from "expo-router";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -72,7 +68,6 @@ import {
   DRAFT_NEW_SESSION,
   useChatDraftsStore,
 } from "@/data/stores/chat-drafts-store";
-import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-store";
 import { useChatSessionRealtime } from "@/data/realtime/use-chat-session-realtime";
 import {
   invalidatePendingTask,
@@ -81,8 +76,6 @@ import {
 import { useWorkspaceAgentAvailability } from "@/lib/workspace-agent-availability";
 import { sendFailureMessage } from "@/lib/dispatch-reason";
 import { useAgentPresence } from "@/lib/use-agent-presence";
-import { Header } from "@/components/ui/header";
-import { ChatTitleButton } from "@/components/chat/chat-title-button";
 import { ChatSessionActions } from "@/components/chat/chat-session-actions";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
 import { ChatComposer } from "@/components/chat/chat-composer";
@@ -94,50 +87,33 @@ import { useChatSelectStore } from "@/data/chat-select-store";
 import { isAgentRuntimeBound } from "@/lib/is-agent-runtime-bound";
 import { chatSessionDisplayTitle } from "@/lib/chat-session-title";
 
-export default function ChatTab() {
+/** Route sentinel for the not-yet-created conversation. A real session id is
+ *  a UUID, so this can never collide with one. */
+const NEW_SESSION = "new";
+
+export default function ChatSessionScreen() {
   const qc = useQueryClient();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
-  const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const userId = useAuthStore((s) => s.user?.id);
 
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const [agentPickerOpen, setAgentPickerOpen] = useState(false);
+  const { sessionId: routeSessionId, agentId: routeAgentId } =
+    useLocalSearchParams<{ sessionId: string; agentId?: string }>();
+  const activeSessionId =
+    routeSessionId === NEW_SESSION ? null : (routeSessionId ?? null);
 
-  // Bridge to the chat-sessions formSheet route. Mirror local
-  // activeSessionId into the store so the picker can render the current
-  // selection's check mark; consume the picker's one-shot select request
-  // via useEffect.
-  const setStoreActiveSessionId = useChatSessionPickerStore(
-    (s) => s.setActiveSessionId,
+  // Only meaningful for a new chat: the list screen passes the agent the user
+  // picked before navigating here. An existing session resolves its agent from
+  // the session record instead, so this stays null there.
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(
+    routeAgentId ?? null,
   );
-  const selectRequest = useChatSessionPickerStore((s) => s.selectRequest);
-  const consumeSelect = useChatSessionPickerStore((s) => s.consumeSelect);
-  useEffect(() => {
-    setStoreActiveSessionId(activeSessionId);
-  }, [activeSessionId, setStoreActiveSessionId]);
+  const [agentPickerOpen, setAgentPickerOpen] = useState(false);
 
   // ── Server state ───────────────────────────────────────────────────────
   const { data: sessions = [] } = useQuery(chatSessionsOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const { data: members = [] } = useQuery(memberListOptions(wsId));
 
-  // ── Auto-hydrate active session on first Chat tab entry ────────────────
-  // Mobile-only deviation from web: web's chat-window opens to an empty
-  // state when no `activeSessionId` is persisted; on a phone, picking
-  // a session is 4 taps, so jump straight to the most recent session.
-  // Hydration is one-shot per workspace.
-  const hydratedWsRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!wsId) return;
-    if (hydratedWsRef.current === wsId) return;
-    if (sessions.length === 0) {
-      hydratedWsRef.current = wsId;
-      return;
-    }
-    hydratedWsRef.current = wsId;
-    setActiveSessionId(sessions[0].id);
-  }, [wsId, sessions]);
   const { data: messages = [], isLoading: messagesLoading } = useQuery(
     chatMessagesOptions(activeSessionId),
   );
@@ -224,8 +200,10 @@ export default function ChatTab() {
   const promoteNewDraft = useChatDraftsStore((s) => s.promoteNewDraft);
 
   // ── Realtime ───────────────────────────────────────────────────────────
+  // Deleted from another device while open: there is nothing left to show, so
+  // unwind to the list rather than leaving a transcript that no longer exists.
   useChatSessionRealtime(activeSessionId, () => {
-    setActiveSessionId(null);
+    router.back();
   });
 
   // Exit text-selection mode whenever the chat tab loses focus. Expo
@@ -344,7 +322,11 @@ export default function ChatTab() {
       );
       if (isNewSession) {
         promoteNewDraft(sessionId);
-        setActiveSessionId(sessionId);
+        // Adopt the id in place. A push/replace here would remount the screen
+        // mid-send and drop the optimistic bubble we just seeded; setParams
+        // keeps this exact screen and only swaps `new` for the real id, so
+        // Back still goes to the list.
+        router.setParams({ sessionId });
       }
 
       try {
@@ -423,29 +405,14 @@ export default function ChatTab() {
       .finally(() => invalidatePendingTask(qc, sessionId));
   }, [pendingTask?.task_id, pendingTask?.status, activeSessionId, qc]);
 
-  // ── Header / sheet actions ─────────────────────────────────────────────
-  const handleNewChat = useCallback(() => {
-    if (availableAgents.length > 1) {
-      setAgentPickerOpen(true);
-      return;
-    }
-    setSelectedAgentId(null);
-    setActiveSessionId(null);
-  }, [availableAgents.length]);
-
+  // ── Header actions ─────────────────────────────────────────────────────
+  // Swapping the agent only makes sense before a session exists — an open
+  // session is bound to the agent that created it. So picking one here just
+  // rewrites this blank screen's agent rather than navigating anywhere.
   const handlePickAgent = useCallback((agent: Agent) => {
     setSelectedAgentId(agent.id);
-    setActiveSessionId(null);
+    setAgentPickerOpen(false);
   }, []);
-
-  // Apply the user's pick from the chat-sessions route (or "no session"
-  // when they delete the active one in the sheet).
-  useEffect(() => {
-    if (!selectRequest) return;
-    setSelectedAgentId(null);
-    setActiveSessionId(selectRequest.id);
-    consumeSelect();
-  }, [selectRequest, consumeSelect]);
 
   const handleDeleteActive = useCallback(() => {
     if (!activeSession) return;
@@ -458,9 +425,10 @@ export default function ChatTab() {
           text: "Delete",
           style: "destructive",
           onPress: () => {
-            const id = activeSession.id;
-            setActiveSessionId(null);
-            deleteSession.mutate(id);
+            // Leave before the row disappears: staying would render a
+            // transcript whose session is already gone from the cache.
+            router.back();
+            deleteSession.mutate(activeSession.id);
           },
         },
       ],
@@ -489,27 +457,20 @@ export default function ChatTab() {
 
   return (
     <View className="flex-1 bg-background">
-      <Header
-        center={
-          <ChatTitleButton
-            currentSession={activeSession}
-            currentAgent={currentAgent}
-            onPress={() => {
-              if (!wsSlug) return;
-              router.push({
-                pathname: "/[workspace]/chat-sessions",
-                params: { workspace: wsSlug },
-              });
-            }}
-          />
-        }
-        right={
-          <ChatSessionActions
-            showMore={!!activeSession}
-            onMorePress={handleDeleteActive}
-            onNewPress={handleNewChat}
-          />
-        }
+      {/* Native header, not the tab-root <Header>: this is a push screen now,
+          and the iOS back button + swipe-to-dismiss come with it. The title
+          is plain text rather than the old tappable ChatTitleButton — the
+          list it used to open is the screen behind Back. */}
+      <Stack.Screen
+        options={{
+          title: activeSession
+            ? chatSessionDisplayTitle(activeSession.title)
+            : (currentAgent?.name ?? "New chat"),
+          headerRight: () =>
+            activeSession ? (
+              <ChatSessionActions showMore onMorePress={handleDeleteActive} />
+            ) : null,
+        }}
       />
       {availability === "none" ? <NoAgentBanner /> : null}
       <KeyboardAvoidingView

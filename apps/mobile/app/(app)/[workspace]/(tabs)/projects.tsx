@@ -1,16 +1,17 @@
 /**
- * Projects browse page. Flat FlatList over the workspace's projects.
+ * Projects tab — flat list of the workspace's projects, newest activity first.
  *
- * Title and `+` button live in the native iOS Stack header (declared via
- * Stack.Screen options in parent `_layout.tsx`, overridden here to add
- * `headerRight`). Rendering an in-body title row on top of the native bar
- * would stack two "Projects" labels vertically.
+ * Promoted from a row inside the More popover to a tab of its own, so the
+ * screen now owns a tab-root `<Header>` instead of leaning on the push
+ * stack's native bar. Tapping a project pushes `project/[id]` on the parent
+ * workspace Stack, which is where the per-project issue list (Open / Done
+ * buckets) already lives — the same destination the issue detail's project
+ * link uses, so there is exactly one project screen in the app.
  *
- * Sort: client-side by `updated_at` desc — most recently touched at top.
- * Mirrors web's default list ordering. WS `project:*` events keep the cache
- * fresh via the listing-level realtime hook (`useProjectsRealtime` in
- * `_layout.tsx`), so pull-to-refresh is rarely needed but kept for the
- * cellular-edge case where a WS reconnect missed events.
+ * Sort: client-side by `updated_at` desc, mirroring web's default list
+ * ordering. `useProjectsRealtime` in the workspace layout keeps the cache
+ * fresh, so pull-to-refresh is only for the cellular edge case where a WS
+ * reconnect missed events.
  */
 import { useCallback, useMemo } from "react";
 import {
@@ -19,17 +20,17 @@ import {
   RefreshControl,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { router } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
-import { Stack, router } from "expo-router";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
+import { Header } from "@/components/ui/header";
 import { IconButton } from "@/components/ui/icon-button";
 import { ProjectRow } from "@/components/project/project-row";
 import { projectListOptions } from "@/data/queries/projects";
 import { useWorkspaceStore } from "@/data/workspace-store";
 
-export default function ProjectsPage() {
+export default function ProjectsTab() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
 
@@ -49,20 +50,25 @@ export default function ProjectsPage() {
     if (wsSlug) router.push(`/${wsSlug}/project/new`);
   }, [wsSlug]);
 
-  const headerRight = useCallback(() => {
-    return <PlusButton onPress={goCreate} />;
-  }, [goCreate]);
-
   return (
-    <SafeAreaView className="flex-1 bg-background" edges={[]}>
-      <Stack.Screen options={{ headerRight }} />
+    <View className="flex-1 bg-background">
+      <Header
+        title="Projects"
+        right={
+          <IconButton
+            name="add"
+            onPress={goCreate}
+            accessibilityLabel="New project"
+          />
+        }
+      />
 
       {isLoading ? (
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator />
         </View>
       ) : error ? (
-        <View className="px-4 gap-3 pt-4">
+        <View className="gap-3 px-4 pt-4">
           <Text className="text-sm text-destructive">
             Failed to load projects:{" "}
             {error instanceof Error ? error.message : "unknown error"}
@@ -72,13 +78,20 @@ export default function ProjectsPage() {
           </Button>
         </View>
       ) : sorted.length === 0 ? (
-        <EmptyState onCreate={goCreate} />
+        <View className="flex-1 items-center justify-center gap-4 px-6">
+          <Text className="text-base font-medium text-foreground">
+            No projects yet
+          </Text>
+          <Button variant="default" onPress={goCreate}>
+            <Text>Create project</Text>
+          </Button>
+        </View>
       ) : (
         <FlatList
           data={sorted}
           keyExtractor={(item) => item.id}
           ItemSeparatorComponent={() => (
-            <View className="h-px bg-border ml-4" />
+            <View className="ml-4 h-px bg-border" />
           )}
           renderItem={({ item }) => (
             <ProjectRow
@@ -94,29 +107,6 @@ export default function ProjectsPage() {
           contentContainerClassName="pb-6"
         />
       )}
-    </SafeAreaView>
-  );
-}
-
-function PlusButton({ onPress }: { onPress: () => void }) {
-  return (
-    <IconButton
-      name="add"
-      onPress={onPress}
-      accessibilityLabel="New project"
-    />
-  );
-}
-
-function EmptyState({ onCreate }: { onCreate: () => void }) {
-  return (
-    <View className="flex-1 items-center justify-center px-6 gap-4">
-      <Text className="text-base font-medium text-foreground">
-        No projects yet
-      </Text>
-      <Button variant="default" onPress={onCreate}>
-        <Text>Create project</Text>
-      </Button>
     </View>
   );
 }

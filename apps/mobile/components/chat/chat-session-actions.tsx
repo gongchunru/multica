@@ -1,7 +1,11 @@
 /**
- * Right-side actions for the Chat tab header. Two buttons:
+ * Right-side actions for the Chat headers. Up to two buttons:
  *   - ⋯ (session menu): only when an active session exists.
- *   - + (new chat): always shown.
+ *   - + (new chat): only where creating one belongs.
+ *
+ * `onNewPress` is optional because the list and the conversation want
+ * different halves of this: the list owns creation (+), a conversation owns
+ * only its own menu (⋯). Passing neither renders nothing.
  *
  * Both are RNR `<Button variant="ghost" size="icon">` via IconButton, so
  * touch feedback / sizing / dark-mode tinting are all consistent with the
@@ -11,8 +15,8 @@ import { IconButton } from "@/components/ui/icon-button";
 
 interface Props {
   showMore: boolean;
-  onMorePress: () => void;
-  onNewPress: () => void;
+  onMorePress?: () => void;
+  onNewPress?: () => void;
 }
 
 export function ChatSessionActions({
@@ -22,19 +26,21 @@ export function ChatSessionActions({
 }: Props) {
   return (
     <>
-      {showMore ? (
+      {showMore && onMorePress ? (
         <IconButton
           name="ellipsis-horizontal"
           onPress={onMorePress}
           accessibilityLabel="Session actions"
         />
       ) : null}
-      <IconButton
-        name="add"
-        iconSize={24}
-        onPress={onNewPress}
-        accessibilityLabel="New chat"
-      />
+      {onNewPress ? (
+        <IconButton
+          name="add"
+          iconSize={24}
+          onPress={onNewPress}
+          accessibilityLabel="New chat"
+        />
+      ) : null}
     </>
   );
 }

@@ -1,148 +1,79 @@
 /**
- * Bottom tab bar — JS `<Tabs>` from expo-router (react-navigation under the
- * hood). We tried NativeTabs first but its `canPreventDefault: false`
- * constraint makes "tap More → open something" impossible. JS Tabs
- * supports `listeners.tabPress + e.preventDefault()`, the canonical RN
- * pattern for tab-as-action.
+ * Bottom tab bar — native SwiftUI tabs via expo-router's `NativeTabs`.
  *
- * The "More" tab is **not a navigation target** — its press opens a
- * DropdownMenu popover anchored above the tab. The popover is rendered
- * by `<MoreTabDropdownAnchor />` as a sibling of `<Tabs>`, NOT as a
- * `tabBarButton` replacement: keeping the real tab button intact means
- * the icon + "More" label render identically to the other three tabs.
- * We just open the dropdown imperatively from `listeners.tabPress` via
- * the exposed `TriggerRef.open()`.
+ * Why native rather than the JS `<Tabs>` we used before: on iOS 26 the system
+ * tab bar is the Liquid Glass bar — it floats, refracts the content behind it,
+ * and shrinks out of the way as you scroll (`minimizeBehavior`). None of that
+ * is reproducible by tinting a JS tab bar; it has to be the real UITabBar.
+ * Older iOS falls back to the standard opaque bar on its own, so there is no
+ * version branch to write here.
  *
- * The stub (tabs)/more.tsx file still exists only because expo-router
- * requires every Tabs.Screen to have a backing route file — the press
- * is preventDefault'd so we never actually navigate to it.
+ * The trade this cost us: `NativeTabs`' tabPress has `canPreventDefault:
+ * false`, so the old "tap More → open a dropdown popover anchored over the
+ * bar" trick is impossible. More is now an ordinary destination screen
+ * ((tabs)/more.tsx) holding the same entries the popover did. That is also
+ * the plainer iOS idiom — a More tab that opens a list is what Apple's own
+ * apps do once they exceed the bar.
  *
- * Active / inactive tint colors are derived from the current colour
- * scheme via THEME so dark mode picks contrasting values automatically.
+ * Projects graduated from a row inside More to its own tab, so the More list
+ * no longer carries it.
  */
-import { useRef } from "react";
-import { Tabs } from "expo-router";
-import { Image } from "expo-image";
-import { View } from "react-native";
-import type { TriggerRef } from "@rn-primitives/dropdown-menu";
+import { NativeTabs } from "expo-router/unstable-native-tabs";
 import { useWorkspaceStore } from "@/data/workspace-store";
-import { useColorScheme } from "@/lib/use-color-scheme";
-import { THEME } from "@/lib/theme";
 import {
   useInboxUnreadCount,
   useChatUnreadMessageCount,
 } from "@/lib/unread-counts";
-import { MoreTabDropdownAnchor } from "@/components/nav/more-tab-dropdown";
 
-// Only override backgroundColor — @react-navigation/elements Badge internally
-// sets borderRadius = size/2, height = size, minWidth = size, so a single
-// character renders as a perfect circle. Overriding minWidth/fontSize here
-// breaks that geometry. Text color is auto-derived from backgroundColor
-// luminance by Badge itself (white on brand blue).
-const BADGE_STYLE = {
-  backgroundColor: THEME.light.brand,
-};
+// Icon / Label / Badge hang off Trigger, not off NativeTabs. Destructured so
+// the tree below reads as markup rather than as three-level property chains.
+const { Trigger } = NativeTabs;
+const { Icon, Label, Badge } = Trigger;
+
+/** Truncation aligned with web's sidebar badges. `undefined` renders no
+ *  badge at all, so a zero count is a free no-op. */
+function badgeValue(count: number): string | undefined {
+  if (count <= 0) return undefined;
+  return count > 99 ? "99+" : String(count);
+}
 
 export default function TabsLayout() {
-  const { colorScheme } = useColorScheme();
-  const t = THEME[colorScheme];
-
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
-  const inboxUnread = useInboxUnreadCount(wsId);
-  const chatUnread = useChatUnreadMessageCount(wsId);
-
-  // Truncation aligned with web's sidebar badges: 99+ for both. `undefined`
-  // makes React Navigation hide the badge, so zero-count is a free no-op.
-  const inboxBadge =
-    inboxUnread > 0 ? (inboxUnread > 99 ? "99+" : String(inboxUnread)) : undefined;
-  const chatBadge =
-    chatUnread > 0 ? (chatUnread > 99 ? "99+" : String(chatUnread)) : undefined;
-
-  // Imperative handle into the More tab's dropdown — listeners.tabPress
-  // calls .open(); the @rn-primitives Trigger measures itself inside
-  // open() so the popover anchors to MoreTabDropdownAnchor's rect.
-  const moreTriggerRef = useRef<TriggerRef>(null);
+  const inboxBadge = badgeValue(useInboxUnreadCount(wsId));
+  const chatBadge = badgeValue(useChatUnreadMessageCount(wsId));
 
   return (
-    <View style={{ flex: 1 }}>
-      <Tabs
-        screenOptions={{
-          headerShown: false,
-          tabBarActiveTintColor: t.foreground,
-          tabBarInactiveTintColor: t.mutedForeground,
-          tabBarStyle: { backgroundColor: t.background },
-          tabBarLabelStyle: { fontSize: 11 },
-        }}
-      >
-        <Tabs.Screen
-          name="inbox"
-          options={{
-            title: "Inbox",
-            tabBarBadge: inboxBadge,
-            tabBarBadgeStyle: BADGE_STYLE,
-            tabBarIcon: ({ color, size, focused }) => (
-              <Image
-                source={focused ? "sf:tray.fill" : "sf:tray"}
-                tintColor={color}
-                style={{ width: size, height: size }}
-              />
-            ),
-          }}
-        />
-        <Tabs.Screen
-          name="my-issues"
-          options={{
-            title: "My Issues",
-            tabBarIcon: ({ color, size, focused }) => (
-              <Image
-                source={focused ? "sf:checklist" : "sf:checklist.unchecked"}
-                tintColor={color}
-                style={{ width: size, height: size }}
-              />
-            ),
-          }}
-        />
-        <Tabs.Screen
-          name="chat"
-          options={{
-            title: "Chat",
-            tabBarBadge: chatBadge,
-            tabBarBadgeStyle: BADGE_STYLE,
-            tabBarIcon: ({ color, size, focused }) => (
-              <Image
-                source={focused ? "sf:bubble.left.fill" : "sf:bubble.left"}
-                tintColor={color}
-                style={{ width: size, height: size }}
-              />
-            ),
-          }}
-        />
-        <Tabs.Screen
-          name="more"
-          options={{
-            title: "More",
-            tabBarIcon: ({ color, size }) => (
-              <Image
-                source="sf:ellipsis"
-                tintColor={color}
-                style={{ width: size, height: size }}
-              />
-            ),
-          }}
-          listeners={() => ({
-            tabPress: (e) => {
-              // Don't navigate to the (stub) /more screen — open the
-              // dropdown popover instead. The trigger is invisible and
-              // mounted in MoreTabDropdownAnchor below; ref.open() also
-              // measures its rect so the popover anchors correctly.
-              e.preventDefault();
-              moreTriggerRef.current?.open();
-            },
-          })}
-        />
-      </Tabs>
+    // onScrollDown: the bar collapses to a pill while reading a long list and
+    // springs back the moment you scroll up — the iOS 26 behaviour users get
+    // in Mail / Safari. Tint and material are left to the system so the glass
+    // picks up the wallpaper and the light/dark transition for free.
+    <NativeTabs minimizeBehavior="onScrollDown">
+      <Trigger name="inbox">
+        <Icon sf={{ default: "tray", selected: "tray.fill" }} />
+        <Label>Inbox</Label>
+        {inboxBadge ? <Badge>{inboxBadge}</Badge> : null}
+      </Trigger>
 
-      <MoreTabDropdownAnchor triggerRef={moreTriggerRef} />
-    </View>
+      <Trigger name="my-issues">
+        <Icon sf={{ default: "checklist.unchecked", selected: "checklist" }} />
+        <Label>My Issues</Label>
+      </Trigger>
+
+      <Trigger name="projects">
+        <Icon sf={{ default: "square.stack", selected: "square.stack.fill" }} />
+        <Label>Projects</Label>
+      </Trigger>
+
+      <Trigger name="chat">
+        <Icon sf={{ default: "bubble.left", selected: "bubble.left.fill" }} />
+        <Label>Chat</Label>
+        {chatBadge ? <Badge>{chatBadge}</Badge> : null}
+      </Trigger>
+
+      <Trigger name="more">
+        <Icon sf="ellipsis" />
+        <Label>More</Label>
+      </Trigger>
+    </NativeTabs>
   );
 }
