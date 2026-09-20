@@ -83,6 +83,16 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         {
           ios: {
             buildReactNativeFromSource: true,
+            // Expo's default floor is 15.1, which no longer compiles:
+            // expo-router 55.0.14 reads `UIAction.subtitle` in
+            // LinkPreview/LinkPreviewNativeActionView.swift without an
+            // `#available` guard, and that property is iOS 16+. (The
+            // `keepsMenuPresented` line right above it *is* guarded, so this
+            // is an upstream oversight rather than a deliberate floor.)
+            // Raising it here also drags the few CocoaPods resource-bundle
+            // targets still declaring 6.0 / 9.0 / 12.4 up to something Xcode
+            // 27 accepts — it rejects anything below 15.0.
+            deploymentTarget: "16.0",
           },
         },
       ],
