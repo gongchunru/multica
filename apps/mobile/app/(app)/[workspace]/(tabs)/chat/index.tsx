@@ -11,13 +11,21 @@
  * to be chosen before a session exists, so the picker belongs on the screen
  * that has no session yet. One available agent skips the picker entirely.
  */
-import { useCallback, useState } from "react";
-import { Alert, FlatList, Pressable, View } from "react-native";
+import { useCallback, useMemo, useState } from "react";
+import {
+  ActionSheetIOS,
+  Alert,
+  FlatList,
+  Pressable,
+  View,
+} from "react-native";
 import { router } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
 import { useQuery } from "@tanstack/react-query";
 import type { Agent, ChatSession } from "@multica/core/types";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
+import { sortChatSessions } from "@multica/core/chat/queries";
+import { Image } from "expo-image";
 import { Text } from "@/components/ui/text";
 import { Header } from "@/components/ui/header";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
@@ -27,11 +35,17 @@ import { NoAgentBanner } from "@/components/chat/no-agent-banner";
 import { chatSessionsOptions } from "@/data/queries/chat";
 import { agentListOptions } from "@/data/queries/agents";
 import { memberListOptions } from "@/data/queries/members";
-import { useDeleteChatSession } from "@/data/mutations/chat";
+import {
+  useDeleteChatSession,
+  useRenameChatSession,
+  useSetChatSessionPinned,
+} from "@/data/mutations/chat";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useChatImmersiveStore } from "@/data/stores/chat-immersive-store";
 import { chatSessionDisplayTitle } from "@/lib/chat-session-title";
+import { useColorScheme } from "@/lib/use-color-scheme";
+import { THEME } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
 export default function ChatListScreen() {
@@ -54,9 +68,16 @@ export default function ChatListScreen() {
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
 
   const { data: sessions = [] } = useQuery(chatSessionsOptions(wsId));
+  // Pinned first, then most-recent activity — the same shared comparator the
+  // server and web order by, so a pin looks identical everywhere. Re-sorting
+  // here rather than trusting the payload also covers the optimistic pin,
+  // which patches the flat cache before the refetch lands.
+  const orderedSessions = useMemo(() => sortChatSessions(sessions), [sessions]);
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const deleteSession = useDeleteChatSession();
+  const renameSession = useRenameChatSession();
+  const setPinned = useSetChatSessionPinned();
 
   const memberRole = members.find((m) => m.user_id === userId)?.role ?? null;
   // Same invoke gate the conversation applies: starting a chat enqueues a run,
@@ -115,6 +136,66 @@ export default function ChatListScreen() {
     [deleteSession],
   );
 
+  const promptRename = useCallback(
+    (session: ChatSession) => {
+      // Alert.prompt is the native text-entry affordance the mobile
+      // instructions call for; a formSheet for one field would be heavier
+      // than the edit.
+      Alert.prompt(
+        "Rename chat",
+        undefined,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Save",
+            onPress: (next?: string) => {
+              const title = (next ?? "").trim();
+              // Unchanged or emptied: nothing to send. The server would
+              // reject an empty title anyway.
+              if (!title || title === session.title) return;
+              renameSession.mutate({ id: session.id, title });
+            },
+          },
+        ],
+        "plain-text",
+        session.title,
+      );
+    },
+    [renameSession],
+  );
+
+  /** Long-press menu. Pin sits first because it is the reversible one;
+   *  Delete is last and destructive, matching every other row menu here. */
+  const openSessionActions = useCallback(
+    (session: ChatSession) => {
+      const pinned = session.pinned === true;
+      const options = [
+        pinned ? "Unpin" : "Pin to top",
+        "Rename",
+        "Delete",
+        "Cancel",
+      ];
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title: chatSessionDisplayTitle(session.title),
+          options,
+          destructiveButtonIndex: 2,
+          cancelButtonIndex: 3,
+        },
+        (index) => {
+          if (index === 0) {
+            setPinned.mutate({ id: session.id, pinned: !pinned });
+          } else if (index === 1) {
+            promptRename(session);
+          } else if (index === 2) {
+            confirmDelete(session);
+          }
+        },
+      );
+    },
+    [confirmDelete, promptRename, setPinned],
+  );
+
   return (
     <View className="flex-1 bg-background">
       <Header
@@ -128,7 +209,7 @@ export default function ChatListScreen() {
       {agents.length === 0 ? <NoAgentBanner /> : null}
 
       <FlatList
-        data={sessions}
+        data={orderedSessions}
         keyExtractor={(s) => s.id}
         ItemSeparatorComponent={() => <View className="ml-4 h-px bg-border" />}
         ListEmptyComponent={
@@ -142,7 +223,7 @@ export default function ChatListScreen() {
           <ChatSessionRow
             session={item}
             onPress={() => openSession(item.id)}
-            onLongPress={() => confirmDelete(item)}
+            onLongPress={() => openSessionActions(item)}
           />
         )}
         contentContainerClassName="pb-6"
@@ -173,6 +254,7 @@ function ChatSessionRow({
   onLongPress: () => void;
 }) {
   const archived = session.status === "archived";
+  const { colorScheme } = useColorScheme();
   return (
     <Pressable
       onPress={onPress}
@@ -189,15 +271,26 @@ function ChatSessionRow({
       />
       <ActorAvatar type="agent" id={session.agent_id} size={32} showPresence />
       <View className="flex-1">
-        <Text
-          className={cn(
-            "text-sm text-foreground",
-            session.has_unread && "font-semibold",
-          )}
-          numberOfLines={1}
-        >
-          {chatSessionDisplayTitle(session.title)}
-        </Text>
+        <View className="flex-row items-center gap-1.5">
+          {/* Sort order alone doesn't say "pinned" — the top row of any list
+              looks the same either way. */}
+          {session.pinned ? (
+            <Image
+              source="sf:pin.fill"
+              tintColor={THEME[colorScheme].mutedForeground}
+              style={{ width: 11, height: 11 }}
+            />
+          ) : null}
+          <Text
+            className={cn(
+              "flex-1 text-sm text-foreground",
+              session.has_unread && "font-semibold",
+            )}
+            numberOfLines={1}
+          >
+            {chatSessionDisplayTitle(session.title)}
+          </Text>
+        </View>
         {archived ? (
           <Text className="mt-0.5 text-xs text-muted-foreground">archived</Text>
         ) : null}

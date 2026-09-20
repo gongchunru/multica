@@ -1141,6 +1141,35 @@ class ApiClient {
     await this.fetch<void>(`/api/chat/sessions/${id}`, { method: "DELETE" });
   }
 
+  /** PATCH /api/chat/sessions/{id} — the handler takes exactly one editable
+   *  field per call, so this sends title alone. Falls back to the caller's
+   *  optimistic row: the list already shows the new name and the WS
+   *  `chat:session_updated` carries the authoritative one. */
+  async renameChatSession(id: string, title: string): Promise<ChatSession | null> {
+    return this.fetchValidatedWith(
+      `/api/chat/sessions/${id}`,
+      ChatSessionSchema.nullable(),
+      null,
+      { method: "PATCH", body: JSON.stringify({ title }) },
+    );
+  }
+
+  /** PATCH /api/chat/sessions/{id}/pin — pins the chat to the top of this
+   *  user's list. Deliberately its own endpoint, not the generic /api/pins
+   *  (which only takes issue / project / view). The server does not bump
+   *  `updated_at`, so unpinning does not shuffle the activity order. */
+  async setChatSessionPinned(
+    id: string,
+    pinned: boolean,
+  ): Promise<ChatSession | null> {
+    return this.fetchValidatedWith(
+      `/api/chat/sessions/${id}/pin`,
+      ChatSessionSchema.nullable(),
+      null,
+      { method: "PATCH", body: JSON.stringify({ pinned }) },
+    );
+  }
+
   async listChatMessages(
     sessionId: string,
     opts?: { signal?: AbortSignal },

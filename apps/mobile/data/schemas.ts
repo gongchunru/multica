@@ -259,6 +259,10 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
   // so the badge math can tell "older server didn't send it" from a real 0 —
   // the tab badge sums `unread_count ?? 0`, same rule as web's sidebar.
   unread_count: z.number().optional(),
+  // Server derives this from `pinned_at`. Optional rather than defaulted so a
+  // server that predates chat pinning reads as "unknown" instead of asserting
+  // every chat is unpinned; `sortChatSessions` treats both as falsy anyway.
+  pinned: z.boolean().optional(),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
 }).loose();
