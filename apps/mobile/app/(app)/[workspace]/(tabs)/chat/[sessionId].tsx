@@ -16,10 +16,10 @@
  * Layout:
  *   Stack header (native — back button + swipe-to-dismiss come from it)
  *   View ─ (NoAgentBanner?)
- *        ─ KeyboardAvoidingView ─ ChatMessageList (live status + timeline
- *                                                  in its ListFooter)
- *                                ─ OfflineBanner
- *                                ─ ChatComposer
+ *        ─ View ─ ChatMessageList (live status + timeline in its ListFooter)
+ *               ─ OfflineBanner
+ *               ─ ChatComposer (lifts itself over the keyboard and owns the
+ *                               bottom safe-area inset)
  *
  * Optimistic send burst mirrors web's chat-window.tsx send sequence
  * (packages/views/chat/components/chat-window.tsx ~262-345):
@@ -27,12 +27,7 @@
  *   patch pendingTask with server task_id + created_at.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Alert,
-  KeyboardAvoidingView,
-  Platform,
-  View,
-} from "react-native";
+import { Alert, View } from "react-native";
 import { Stack, router, useLocalSearchParams } from "expo-router";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -473,10 +468,11 @@ export default function ChatSessionScreen() {
         }}
       />
       {availability === "none" ? <NoAgentBanner /> : null}
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        className="flex-1"
-      >
+      {/* No KeyboardAvoidingView: ChatComposer lifts itself with
+          KeyboardStickyView (react-native-keyboard-controller) and owns the
+          bottom safe-area inset, the same as the comment composer. Wrapping
+          it here too would double-stack the lift. */}
+      <View className="flex-1">
         <ChatMessageList
           messages={visibleMessages}
           loading={messagesLoading}
@@ -509,7 +505,7 @@ export default function ChatSessionScreen() {
           disabled={disabled}
           disabledReason={disabledReason}
         />
-      </KeyboardAvoidingView>
+      </View>
 
       <AgentPickerSheet
         visible={agentPickerOpen}

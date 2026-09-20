@@ -19,9 +19,12 @@
  *     server back-fills `chat_message_id` on each row when the message
  *     persists (server-side). `MessageComposer` calls `api.uploadFile`
  *     without `{ issueId, commentId }`.
- *   - **Parent owns keyboard**: chat.tsx wraps in KeyboardAvoidingView +
- *     SafeAreaView, so `manageKeyboard={false}` prevents the composer
- *     from double-stacking its own keyboard handling.
+ *   - **Composer owns keyboard**: it keeps `manageKeyboard` on, the same as
+ *     the comment composer, so `KeyboardStickyView` lifts it and the safe-area
+ *     inset keeps it off the home indicator. The conversation screen used to
+ *     claim that job with a KeyboardAvoidingView, which never lifted anything
+ *     inside the native Stack — and once the tab bar started hiding in a
+ *     conversation, nothing was reserving the bottom inset either.
  *
  * Previously a hand-written 400-LOC twin of inline-comment-composer.tsx;
  * now ~50 LOC plus the StopButton subcomponent.
@@ -117,7 +120,6 @@ export function ChatComposer({
       disabledReason={disabledReason}
       isSending={sending}
       renderStop={allowStop ? () => <StopButton onPress={handleStop} /> : undefined}
-      manageKeyboard={false}
     />
   );
 }
