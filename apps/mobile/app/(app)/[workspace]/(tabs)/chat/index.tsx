@@ -34,6 +34,11 @@ import { cn } from "@/lib/utils";
 
 export default function ChatListScreen() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  // Targets are built as absolute `/{slug}/chat/...` paths, matching every
+  // other screen here. A relative `./id` resolves against the route rather
+  // than the directory, which collapsed to a pathless `multica:///` and hit
+  // the Unmatched Route screen.
+  const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const userId = useAuthStore((s) => s.user?.id);
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
 
@@ -52,22 +57,33 @@ export default function ChatListScreen() {
         .allowed,
   );
 
-  const openSession = useCallback((id: string) => {
-    router.push(`./${id}`);
-  }, []);
+  const openSession = useCallback(
+    (id: string) => {
+      if (wsSlug) router.push(`/${wsSlug}/chat/${id}`);
+    },
+    [wsSlug],
+  );
 
   const startNewChat = useCallback(() => {
     if (availableAgents.length > 1) {
       setAgentPickerOpen(true);
       return;
     }
-    router.push("./new");
-  }, [availableAgents.length]);
+    if (wsSlug) router.push(`/${wsSlug}/chat/new`);
+  }, [availableAgents.length, wsSlug]);
 
-  const handlePickAgent = useCallback((agent: Agent) => {
-    setAgentPickerOpen(false);
-    router.push({ pathname: "./new", params: { agentId: agent.id } });
-  }, []);
+  const handlePickAgent = useCallback(
+    (agent: Agent) => {
+      setAgentPickerOpen(false);
+      if (wsSlug) {
+        router.push({
+          pathname: "/[workspace]/chat/[sessionId]",
+          params: { workspace: wsSlug, sessionId: "new", agentId: agent.id },
+        });
+      }
+    },
+    [wsSlug],
+  );
 
   const confirmDelete = useCallback(
     (session: ChatSession) => {
