@@ -89,6 +89,18 @@ const HEARTBEAT_TIMEOUT_MS = 10_000;
  */
 type State = "idle" | "active" | "paused";
 
+/**
+ * React Native's WebSocket takes a third `options` argument carrying request
+ * headers (Libraries/WebSocket/WebSocket.js). The ambient DOM lib declares the
+ * two-argument browser signature and wins here, so the constructor is narrowed
+ * through this shape at the one call site that needs the headers.
+ */
+type RNWebSocketConstructor = new (
+  url: string,
+  protocols: string | string[] | undefined,
+  options: { headers?: Record<string, string> },
+) => WebSocket;
+
 export class WSClient {
   private ws: WebSocket | null = null;
   private state: State = "idle";
@@ -216,7 +228,22 @@ export class WSClient {
       url.searchParams.set("client_version", this.opts.clientVersion);
     }
 
-    const ws = new WebSocket(url.toString());
+    // Send an EMPTY Origin. RN fills it with the connection target otherwise,
+    // and the server's checkOrigin only treats that as same-origin when it
+    // equals its own Host — which behind a reverse proxy is an internal
+    // address, so the comparison fails and the upgrade is refused with 403
+    // unless the API host itself happens to be in ALLOWED_ORIGINS. A native
+    // client has no page origin to speak of, and the handler allows an empty
+    // one outright, so this says the true thing rather than borrowing the web
+    // app's origin to slip past the allowlist.
+    //
+    // (The header note at the top of this file used to claim RN cannot set
+    // headers. It can — WebSocket.js takes `{headers}` as its third argument.)
+    const ws = new (WebSocket as unknown as RNWebSocketConstructor)(
+      url.toString(),
+      undefined,
+      { headers: { origin: "" } },
+    );
     this.ws = ws;
     this.establishedThisSocket = false;
     this.logger.info("[ws] dialing", url.toString().replace(/token=[^&]*/, "token=…"));
