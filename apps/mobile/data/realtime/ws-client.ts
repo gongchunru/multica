@@ -229,6 +229,16 @@ export class WSClient {
           payload: { token: this.opts.getToken?.() ?? this.opts.token },
         }),
       );
+      // Liveness is the socket's business, not the session's, so the heartbeat
+      // starts here rather than waiting for a frame back. A quiet workspace
+      // sends nothing for minutes at a time; gating this on inbound traffic
+      // would leave exactly those connections unmonitored — and a half-open
+      // socket on a quiet workspace looks identical to a healthy one.
+      //
+      // Safe to send immediately after the auth frame: the token path reads
+      // precisely one message for auth, so this lands second either way and is
+      // handled by the server's normal read loop.
+      this.startHeartbeat();
     };
 
     ws.onmessage = (event) => {
@@ -246,6 +256,12 @@ export class WSClient {
         return;
       }
       if (type === "pong") {
+        // A pong is the server answering us, which proves it accepted this
+        // socket just as well as a business event does — and on a quiet
+        // workspace it is the only frame that will ever come back. Without
+        // this, a reconnect onto an idle workspace would never refresh the
+        // caches it missed.
+        this.onEstablished();
         this.onPong();
         return;
       }
@@ -310,7 +326,6 @@ export class WSClient {
     this.establishedThisSocket = true;
     this.reconnectAttempt = 0;
     this.logger.info("[ws] established");
-    this.startHeartbeat();
     if (this.hasConnectedBefore) {
       for (const cb of this.onReconnectCallbacks) {
         try {

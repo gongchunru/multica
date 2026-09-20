@@ -180,15 +180,13 @@ describe("WSClient establishment without auth_ack", () => {
     return { client, socket };
   }
 
-  it("starts the heartbeat off a business event when no ack arrives", () => {
+  it("starts the heartbeat on open, without waiting for any frame back", () => {
     // Without a heartbeat an iOS/NAT half-open socket reads as OPEN forever,
-    // so events just stop with nothing to notice it.
+    // so events just stop with nothing to notice it. A quiet workspace sends
+    // nothing inbound for minutes, so this cannot wait on inbound traffic.
     const { socket } = connect();
-    socket.receive({ type: "task:message", payload: { task_id: "t", seq: 1 } });
 
-    vi.advanceTimersByTime(25_000);
-
-    expect(socket.sent.map((f) => JSON.parse(f).type)).toContain("ping");
+    expect(socket.sent.map((f) => JSON.parse(f).type)).toEqual(["auth", "ping"]);
   });
 
   it("fires onReconnect on the second connection even with no ack", () => {
@@ -209,14 +207,37 @@ describe("WSClient establishment without auth_ack", () => {
     expect(onReconnect).toHaveBeenCalledTimes(1);
   });
 
+  it("treats a pong as establishment so an idle workspace still recovers", () => {
+    // Reconnecting onto a workspace with no activity yields no business
+    // events at all; the heartbeat's own reply is the only proof of life, and
+    // the caches missed across the gap still need refreshing.
+    const { client } = connect();
+    const onReconnect = vi.fn();
+    client.onReconnect(onReconnect);
+    MockWebSocket.instances[0].receive({ type: "pong" });
+
+    client.forceReconnect();
+    const next = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+    next.open();
+    next.receive({ type: "pong" });
+
+    expect(onReconnect).toHaveBeenCalledTimes(1);
+  });
+
   it("establishes once per socket, not once per frame", () => {
-    const { socket } = connect();
+    const { client, socket } = connect();
+    const onReconnect = vi.fn();
+    client.onReconnect(onReconnect);
+    socket.receive({ type: "pong" });
+
+    client.forceReconnect();
+    const next = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+    next.open();
     for (let seq = 1; seq <= 5; seq++) {
-      socket.receive({ type: "task:message", payload: { task_id: "t", seq } });
+      next.receive({ type: "task:message", payload: { task_id: "t", seq } });
     }
 
-    // startHeartbeat pings synchronously, so a burst that re-established on
-    // every frame would stack five intervals and show five opening pings.
-    expect(socket.sent.filter((f) => JSON.parse(f).type === "ping")).toHaveLength(1);
+    // Five frames on one socket is still one reconnect, not five.
+    expect(onReconnect).toHaveBeenCalledTimes(1);
   });
 });
