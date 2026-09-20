@@ -149,3 +149,74 @@ describe("WSClient session renewal", () => {
     });
   });
 });
+
+// A cookie-authenticated upgrade never produces an auth_ack: the server writes
+// that frame only on the token-frame path (realtime/hub.go), and RN's
+// WebSocket hands NSURLSession's shared cookie jar to the upgrade request, so
+// the phone can land on the cookie branch without asking to. Everything the
+// client does after connecting used to hang off that ack.
+describe("WSClient establishment without auth_ack", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("WebSocket", MockWebSocket);
+    MockWebSocket.instances = [];
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function connect() {
+    const client = new WSClient({
+      url: "wss://example.test/ws",
+      token: "token",
+      workspaceSlug: "workspace",
+    });
+    client.connect();
+    const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+    socket.open();
+    return { client, socket };
+  }
+
+  it("starts the heartbeat off a business event when no ack arrives", () => {
+    // Without a heartbeat an iOS/NAT half-open socket reads as OPEN forever,
+    // so events just stop with nothing to notice it.
+    const { socket } = connect();
+    socket.receive({ type: "task:message", payload: { task_id: "t", seq: 1 } });
+
+    vi.advanceTimersByTime(25_000);
+
+    expect(socket.sent.map((f) => JSON.parse(f).type)).toContain("ping");
+  });
+
+  it("fires onReconnect on the second connection even with no ack", () => {
+    // Each feature refreshes the caches it missed here. Never firing is why a
+    // reconnect left the transcript stale until the screen was reopened.
+    const { client, socket } = connect();
+    const onReconnect = vi.fn();
+    client.onReconnect(onReconnect);
+
+    socket.receive({ type: "task:message", payload: { task_id: "t", seq: 1 } });
+    expect(onReconnect).not.toHaveBeenCalled();
+
+    client.forceReconnect();
+    const next = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+    next.open();
+    next.receive({ type: "task:message", payload: { task_id: "t", seq: 2 } });
+
+    expect(onReconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("establishes once per socket, not once per frame", () => {
+    const { socket } = connect();
+    for (let seq = 1; seq <= 5; seq++) {
+      socket.receive({ type: "task:message", payload: { task_id: "t", seq } });
+    }
+
+    // startHeartbeat pings synchronously, so a burst that re-established on
+    // every frame would stack five intervals and show five opening pings.
+    expect(socket.sent.filter((f) => JSON.parse(f).type === "ping")).toHaveLength(1);
+  });
+});

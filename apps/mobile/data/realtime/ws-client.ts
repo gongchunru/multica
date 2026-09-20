@@ -15,7 +15,11 @@
  *   - Detaches socket handlers BEFORE close() to avoid the spurious
  *     onclose-triggered reconnect that bites RN (close is async over the
  *     bridge — see facebook/react-native#9465).
- *   - Token-mode auth only (no cookies on native).
+ *   - Sends a token auth frame rather than relying on cookies. Note this is
+ *     what we ASK for, not what we get: RN's WebSocket goes through
+ *     NSURLSession, which attaches the shared cookie jar for the host, so an
+ *     upgrade can still be cookie-authenticated server-side. See onEstablished
+ *     for why that means auth_ack cannot be treated as guaranteed.
  *
  * Server compatibility: same protocol as web/desktop. Sends
  *   {type:"auth", payload:{token}} as first frame; expects {type:"auth_ack"}
@@ -94,6 +98,9 @@ export class WSClient {
   private pongTimer: ReturnType<typeof setTimeout> | null = null;
   private awaitingPong = false;
   private hasConnectedBefore = false;
+  /** Whether the CURRENT socket has been confirmed live. Re-armed per dial so
+   *  each connection fires its establishment work exactly once. */
+  private establishedThisSocket = false;
 
   private readonly handlers = new Map<WSEventType, Set<EventHandler>>();
   private readonly anyHandlers = new Set<AnyHandler>();
@@ -211,6 +218,7 @@ export class WSClient {
 
     const ws = new WebSocket(url.toString());
     this.ws = ws;
+    this.establishedThisSocket = false;
     this.logger.info("[ws] dialing", url.toString().replace(/token=[^&]*/, "token=…"));
 
     ws.onopen = () => {
@@ -234,13 +242,31 @@ export class WSClient {
 
       const type = (msg as { type?: string }).type;
       if (type === "auth_ack") {
-        this.onAuthenticated();
+        this.onEstablished();
         return;
       }
       if (type === "pong") {
         this.onPong();
         return;
       }
+      // Any business event proves the server accepted this socket, so treat it
+      // as the establishment signal too.
+      //
+      // auth_ack is NOT guaranteed: the server writes it only on the
+      // token-frame path (realtime/hub.go). When the upgrade request carries a
+      // valid auth cookie the handler authenticates from it and skips that
+      // path entirely — no ack is ever sent. The header comment above claimed
+      // native clients are token-only, but RN's WebSocket goes through
+      // NSURLSession and attaches the shared cookie jar for the host, so any
+      // cookie the REST client picked up silently moves us onto that branch.
+      //
+      // Waiting for an ack that never comes left the socket permanently
+      // un-established: no heartbeat, so a half-open socket stayed OPEN
+      // forever and events simply stopped arriving with nothing to detect it;
+      // and hasConnectedBefore never flipped, so onReconnect never fired and
+      // no feature ever refreshed the caches it missed. Leaving and re-opening
+      // a chat was the only way to see anything again.
+      this.onEstablished();
       if (!type) {
         // Server-side error frames have shape {error: "..."}; log and drop.
         // Reconnect loop is bounded by auth-store's 401 handler eventually
@@ -276,9 +302,14 @@ export class WSClient {
     };
   }
 
-  private onAuthenticated() {
+  /** Idempotent: fires once per socket, on whichever frame arrives first.
+   *  `establishedThisSocket` is cleared in openSocket/teardownSocket so the
+   *  next connection re-arms it. */
+  private onEstablished() {
+    if (this.establishedThisSocket) return;
+    this.establishedThisSocket = true;
     this.reconnectAttempt = 0;
-    this.logger.info("[ws] authenticated");
+    this.logger.info("[ws] established");
     this.startHeartbeat();
     if (this.hasConnectedBefore) {
       for (const cb of this.onReconnectCallbacks) {
@@ -387,6 +418,7 @@ export class WSClient {
 
   private teardownSocket() {
     this.clearHeartbeat();
+    this.establishedThisSocket = false;
     if (!this.ws) return;
     const ws = this.ws;
     // Detach BEFORE close — onclose firing after teardown would re-enter
