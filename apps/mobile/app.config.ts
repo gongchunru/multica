@@ -96,6 +96,10 @@ export default ({ config }: ConfigContext): ExpoConfig => {
           },
         },
       ],
+      // expo-build-properties' deploymentTarget above misses the resource-
+      // bundle targets CocoaPods generates, which keep their podspec's floor
+      // and break the build on Xcode 27. This drags those up too.
+      ["./plugins/with-pods-deployment-target", { deploymentTarget: "16.0" }],
     ],
     extra: { APP_ENV: env },
   };
